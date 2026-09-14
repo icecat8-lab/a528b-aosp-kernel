@@ -1,0 +1,117 @@
+name: Build Kernel (clang-19 / r530567)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            build-essential python3 python3-pip \
+            git-lfs curl device-tree-compiler
+
+      - name: Cache clang toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang-19
+          key: clang-r530567-linux-x86
+
+      - name: Download clang 19 (r530567) toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            -b llvm-r530567 --depth 1 toolchain/clang-19
+
+      - name: Locate clang binary
+        id: find-clang
+        run: |
+          CLANG_BIN=$(find toolchain/clang-19 -maxdepth 2 -type d -name "bin" -path "*r530567*" | head -n1)
+          if [ -z "$CLANG_BIN" ]; then
+            echo "::error::clang-r530567 directory not found in toolchain/clang-19"
+            find toolchain/clang-19 -maxdepth 1 -type d
+            exit 1
+          fi
+          echo "Found: $CLANG_BIN"
+          echo "clang_dir=$(dirname $CLANG_BIN)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify clang version
+        run: |
+          ${{ steps.find-clang.outputs.clang_dir }}/bin/clang --version
+
+      - name: Restore script permissions
+        run: |
+          chmod +x build_kernel.sh
+          find . -type f \( -name "*.py" -o -name "*.sh" -o -name "*.pl" \) -exec chmod +x {} \; 2>/dev/null
+
+      - name: Build kernel
+        run: |
+          export PATH=${{ steps.find-clang.outputs.clang_dir }}/bin:$PATH
+          ./build_kernel.sh
+
+      - name: Collect built modules
+        run: |
+          mkdir -p out_modules
+          find out -name "*.ko" -exec cp {} out_modules/ \;
+          ls -la out_modules/
+
+      - name: Upload Image + dtb
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: |
+            arch/arm64/boot/Image
+            out/arch/arm64/boot/dts/**/*.dtb
+          if-no-files-found: warn
+
+      - name: Upload kernel modules (.ko)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-modules
+          path: out_modules/*.ko
+          if-no-files-found: warn
+
+      - name: Upload full build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: out/.config
+
+      - name: Package AnyKernel3 flashable zip
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 ak3-build
+          rm -rf ak3-build/anykernel.sh ak3-build/README.md ak3-build/ramdisk ak3-build/patch
+          cp ak3/anykernel.sh ak3-build/anykernel.sh
+          cp arch/arm64/boot/Image ak3-build/Image
+          mkdir -p ak3-build/modules/vendor/lib/modules
+          cp ak3/module.load ak3-build/modules/vendor/lib/modules/module.load
+          for m in slimbus slimbus-ngd btpower bt_fm_slim nfc_sec sec_common sec_common_fn sec_cmd \
+                   sec_tclm_v2 sec_secure_touch sec_tsp_dumpkey sec_tsp_log stm_ts camera \
+                   sec_audio_sysfs blk-sec-stats ssg-iosched; do
+            find out_modules -iname "${m}.ko" -exec cp {} ak3-build/modules/vendor/lib/modules/ \;
+          done
+          cd ak3-build
+          zip -r9 ../icecat-kernel-a52sxq.zip . -x ".git/*"
+          cd ..
+          ls -la icecat-kernel-a52sxq.zip
+
+      - name: Upload AnyKernel3 flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashable-zip
+          path: icecat-kernel-a52sxq.zip
+          if-no-files-found: warn
