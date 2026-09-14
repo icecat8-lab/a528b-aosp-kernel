@@ -90,3 +90,26 @@ jobs:
         with:
           name: build-log
           path: out/.config
+
+      - name: Package AnyKernel3 flashable zip
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 ak3-build
+          rm -rf ak3-build/anykernel.sh ak3-build/README.md ak3-build/ramdisk ak3-build/patch
+          cp ak3/anykernel.sh ak3-build/anykernel.sh
+          cp arch/arm64/boot/Image ak3-build/Image
+          mkdir -p ak3-build/modules/vendor/lib/modules
+          cp ak3/module.load ak3-build/modules/vendor/lib/modules/module.load
+          for m in sec_cmd sec_common_fn sec_secure_touch sec_tclm_v2 sec_tsp_dumpkey sec_tsp_log camera stm_ts; do
+            find out_modules -iname "${m}.ko" -exec cp {} ak3-build/modules/vendor/lib/modules/ \;
+          done
+          cd ak3-build
+          zip -r9 ../icecat-kernel-a52sxq.zip . -x ".git/*"
+          cd ..
+          ls -la icecat-kernel-a52sxq.zip
+
+      - name: Upload AnyKernel3 flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashable-zip
+          path: icecat-kernel-a52sxq.zip
+          if-no-files-found: warn
